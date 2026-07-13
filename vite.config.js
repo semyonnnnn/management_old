@@ -16,7 +16,8 @@ export default defineConfig({
   // Add this block to lock onto port 5174
   server: {
     hmr: {
-      host: '10.166.20.130',
+      //change for prod
+      host: 'localhost',
       protocol: 'ws'
     },
     cors: true,              // ENABLE THIS - it tells Vite to send the right headers
