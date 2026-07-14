@@ -17,7 +17,7 @@ export default defineConfig({
   server: {
     hmr: {
       //change for prod
-      host: 'localhost',
+      host: '10.166.20.130',
       protocol: 'ws'
     },
     cors: true,              // ENABLE THIS - it tells Vite to send the right headers

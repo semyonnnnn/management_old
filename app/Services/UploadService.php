@@ -13,14 +13,10 @@ class UploadService
 {
     public function handle(Request $request)
     {
-
-        // dd($request->all());
         $this->validateUpload($request);
         $this->validateSheetNames($request);
 
         $res = $this->python($request);
-
-        // dd($res);
 
         $clean = $this->validatePythonResponse($res);
 
@@ -68,13 +64,10 @@ class UploadService
     protected function storeDataRaw(array $data, string $versionName): void
     {
         DB::transaction(function () use ($data, $versionName) {
-
-            // 1. Deactivate old current version
             DB::table('versions')
                 ->where('isCurrent', true)
                 ->update(['isCurrent' => false, 'updated_at' => now()]);
 
-            // 2. Create new Version record
             $versionId = DB::table('versions')->insertGetId([
                 'name' => $versionName,
                 'isCurrent' => true,
@@ -82,14 +75,13 @@ class UploadService
                 'updated_at' => now(),
             ]);
 
-            // 3. Insert Departments and store ID map by name
             $depIdMap = [];
             foreach ($data['departments'] as $dep) {
                 $depId = DB::table('departments')->insertGetId([
                     'name' => $dep['name'],
                     'territory' => $dep['territory'],
                     'staff' => $dep['staff'],
-                    'state' => $dep['staff'], // ← state gets the same value as staff
+                    'state' => $dep['staff'],
                     'workload' => $dep['workload'],
                     'versions_id' => $versionId,
                     'created_at' => now(),
@@ -98,7 +90,6 @@ class UploadService
                 $depIdMap[$dep['name']] = $depId;
             }
 
-            // 4. Insert Forms and link to actual department ID
             foreach ($data['forms'] as $form) {
                 $depName = $form['department'] ?? null;
                 $depId = $depName && isset($depIdMap[$depName]) ? $depIdMap[$depName] : null;
@@ -120,11 +111,14 @@ class UploadService
 
     public function python(Request $request)
     {
-        $response = Http::attach(
-            'matrix',
-            file_get_contents($request->file('matrix')->getRealPath()),
-            $request->file('matrix')->getClientOriginalName()
-        )->post('http://python:8000/process');
+        // Forcing Guzzle to ignore system proxies for this specific internal request
+        $response = Http::withOptions(['proxy' => false])
+            ->attach(
+                'matrix',
+                file_get_contents($request->file('matrix')->getRealPath()),
+                $request->file('matrix')->getClientOriginalName()
+            )
+            ->post('http://python:9000/process');
 
         if ($response->failed()) {
             throw ValidationException::withMessages([
@@ -156,11 +150,8 @@ class UploadService
         }
     }
 
-
     public function handleManualEdit(Request $request)
     {
-        \Log::info('Manual edit request', $request->all());
-
         $validated = $request->validate([
             'departments' => 'required|array',
             'departments.*.id' => 'required|integer|exists:departments,id',
@@ -170,35 +161,15 @@ class UploadService
 
         DB::transaction(function () use ($validated) {
             foreach ($validated['departments'] as $deptUpdate) {
-                $originalDept = DB::table('departments')
-                    ->where('id', $deptUpdate['id'])
-                    ->first();
-
-                \Log::info('Original department', [
-                    'id' => $deptUpdate['id'],
-                    'old_staff' => $originalDept->staff,
-                    'old_state' => $originalDept->state,
-                    'version_id' => $validated['version_id']
-                ]);
-
+                $originalDept = DB::table('departments')->where('id', $deptUpdate['id'])->first();
                 DB::table('departments')
                     ->where('id', $deptUpdate['id'])
                     ->where('versions_id', $validated['version_id'])
                     ->update([
                         'staff' => $deptUpdate['staff'],
-                        'state' => $originalDept->state, // Use the exact original value
+                        'state' => $originalDept->state,
                         'updated_at' => now()
                     ]);
-
-                $updatedDept = DB::table('departments')
-                    ->where('id', $deptUpdate['id'])
-                    ->first();
-
-                \Log::info('Updated department', [
-                    'id' => $deptUpdate['id'],
-                    'new_staff' => $updatedDept->staff,
-                    'state_after_update' => $updatedDept->state
-                ]);
             }
         });
 
@@ -207,24 +178,19 @@ class UploadService
 
     protected function validateSheetNames(Request $request): void
     {
-        $configs = [
-            'matrix' => ['КО', 'СО'],
-        ];
-
+        $configs = ['matrix' => ['КО', 'СО']];
         $errors = [];
         $reader = new XlsxReader();
         $reader->setReadDataOnly(true);
 
         foreach ($configs as $inputKey => $requiredSheets) {
             $file = $request->file($inputKey);
-            if (!$file)
-                continue;
+            if (!$file) continue;
 
             try {
                 $reader->setLoadSheetsOnly($requiredSheets);
                 $spreadsheet = $reader->load($file->getPathname());
                 $existingSheets = $spreadsheet->getSheetNames();
-
                 foreach ($requiredSheets as $rs) {
                     if (!in_array($rs, $existingSheets)) {
                         $errors[$inputKey][] = "Лист «{$rs}» не найден.";
